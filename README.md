@@ -1,5 +1,7 @@
 # Healthcare Plan Management API
 
+[![Test](https://github.com/LokeshVaddepally77/healthcare-plan-api/actions/workflows/test.yml/badge.svg)](https://github.com/LokeshVaddepally77/healthcare-plan-api/actions/workflows/test.yml)
+
 A secure, event-driven REST API for managing healthcare plan documents. Every request is authenticated with a Google-issued RS256 bearer token, every write is validated against a JSON Schema, and every change is pushed through RabbitMQ into Elasticsearch, where plans are indexed as parent-child documents for search.
 
 ## Highlights
@@ -61,6 +63,19 @@ npm start
 
 To call the API, get a Google ID token (for example from the [OAuth 2.0 Playground](https://developers.google.com/oauthplayground)) and send it as a bearer token.
 
+## Tests
+
+40 Jest + Supertest tests, run by GitHub Actions on every push. RabbitMQ and Google's key server are mocked, so the tests need no Docker or network:
+
+- **Endpoints:** create, read, list, merge patch, replace and delete; `409` on duplicates, `404` on unknown plans, and schema rejections (missing fields, bad enums, bad dates, negative numbers, unknown properties).
+- **Conditional requests:** `304` on a matching `If-None-Match`, `412` on a stale `If-Match`, and new ETags after every write.
+- **Merge patch:** nested merging, adding and updating array items by `objectId`, and rejecting a patch whose merged result breaks the schema.
+- **Token verification:** valid Google RS256 tokens pass; missing or malformed headers, HS256 tokens, missing key IDs, foreign issuers, unknown keys, expired tokens and forged signatures are all rejected.
+
+```bash
+npm test
+```
+
 ## Project structure
 
 ```
@@ -74,6 +89,7 @@ services/consumer.js         queue consumer → Elasticsearch
 services/elasticsearch.js    client and parent-child mapping
 services/setupIndex.js       index creation
 utils/etag.js                ETag generation
+tests/                       Jest + Supertest tests
 ```
 
 Built for INFO 7255 (Advanced Big-Data Applications and Indexing Techniques) at Northeastern University.
