@@ -1,0 +1,330 @@
+openapi: 3.0.3
+info:
+  title: Healthcare Plan Management API
+  version: 3.0.0
+  description: |
+    Secure, event-driven REST API for healthcare plan documents.
+
+    - Every `/api` request needs a Google-issued **RS256** ID token as a bearer token.
+    - Writes are validated against the plan JSON Schema.
+    - `GET` supports `If-None-Match`; `PUT` and `PATCH` support `If-Match`.
+    - Every create, update and delete is queued in RabbitMQ and indexed into Elasticsearch.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+    description: Local development
+security:
+  - googleIdToken: []
+tags:
+  - name: Plans
+  - name: Health
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: The API is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: OK }
+                  timestamp: { type: string, format: date-time }
+                  uptime: { type: number }
+                  storage: { type: string, example: In-Memory }
+                  elasticsearch: { type: string, example: 'http://localhost:9200' }
+                  rabbitmq: { type: string, example: connected }
+
+  /api/v1/plan:
+    post:
+      tags: [Plans]
+      summary: Create a plan
+      description: Validates the plan, stores it, and queues it for search indexing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Plan' }
+      responses:
+        '201':
+          description: Plan created.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Location:
+              description: URL of the new plan.
+              schema: { type: string, example: /api/v1/plan/12xvxc345ssdsds-508 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WriteResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: A plan with this objectId already exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/plans:
+    get:
+      tags: [Plans]
+      summary: List all plans
+      responses:
+        '200':
+          description: A summary of every stored plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, plans]
+                properties:
+                  count: { type: integer, example: 1 }
+                  plans:
+                    type: array
+                    items: { $ref: '#/components/schemas/PlanSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/plan/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The plan's objectId.
+        schema: { type: string, example: 12xvxc345ssdsds-508 }
+    get:
+      tags: [Plans]
+      summary: Get a plan
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Send the ETag you already have to get `304 Not Modified` if the plan hasn't changed.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The plan.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control:
+              schema: { type: string, example: 'private, max-age=3600' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '304':
+          description: Not modified. Your cached copy is current.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    put:
+      tags: [Plans]
+      summary: Replace a plan
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Plan' }
+      responses:
+        '200':
+          description: Plan replaced.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WriteResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Plans]
+      summary: Merge-patch a plan
+      description: |
+        Deep-merges the body into the stored plan. Nested objects are merged, a `null` value removes a
+        field, and arrays of objects are merged item by item using `objectId` (new ids are added).
+        The merged result must still match the plan schema.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { type: object, additionalProperties: true }
+            example:
+              planCostShares: { copay: 30 }
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: The merged plan.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Plans]
+      summary: Delete a plan
+      description: Deletes the plan and all of its child objects, and queues the delete for the search index.
+      responses:
+        '204':
+          description: Plan deleted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+components:
+  securitySchemes:
+    googleIdToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: A Google ID token signed with RS256 and issued by accounts.google.com.
+
+  headers:
+    ETag:
+      description: Quoted MD5 hash of the plan, for conditional requests.
+      schema: { type: string, example: '"5d41402abc4b2a76b9719d911017c592"' }
+
+  parameters:
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: Only write if the plan's current ETag matches. Prevents overwriting someone else's change.
+      schema: { type: string }
+
+  responses:
+    ValidationError:
+      description: The body doesn't match the plan schema.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+    Unauthorized:
+      description: The bearer token is missing, malformed, expired or not issued by Google.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No plan has this objectId.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PreconditionFailed:
+      description: The plan changed since you read it (If-Match didn't match).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - type: object
+                properties:
+                  currentETag: { type: string }
+                  providedETag: { type: string }
+    ServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    MemberCostShare:
+      type: object
+      additionalProperties: false
+      required: [deductible, _org, copay, objectId, objectType]
+      properties:
+        deductible: { type: integer, minimum: 0, example: 2000 }
+        _org: { type: string, example: example.com }
+        copay: { type: integer, minimum: 0, example: 23 }
+        objectId: { type: string, example: 1234vxc2324sdf-501 }
+        objectType: { type: string, enum: [membercostshare] }
+
+    Service:
+      type: object
+      additionalProperties: false
+      required: [_org, objectId, objectType, name]
+      properties:
+        _org: { type: string, example: example.com }
+        objectId: { type: string, example: 1234520xvc30asdf-502 }
+        objectType: { type: string, enum: [service] }
+        name: { type: string, example: Yearly physical }
+
+    PlanService:
+      type: object
+      additionalProperties: false
+      required: [linkedService, planserviceCostShares, _org, objectId, objectType]
+      properties:
+        linkedService: { $ref: '#/components/schemas/Service' }
+        planserviceCostShares: { $ref: '#/components/schemas/MemberCostShare' }
+        _org: { type: string, example: example.com }
+        objectId: { type: string, example: 27283xvx9asdff-504 }
+        objectType: { type: string, enum: [planservice] }
+
+    Plan:
+      type: object
+      additionalProperties: false
+      required: [planCostShares, linkedPlanServices, _org, objectId, objectType, planType, creationDate]
+      properties:
+        planCostShares: { $ref: '#/components/schemas/MemberCostShare' }
+        linkedPlanServices:
+          type: array
+          items: { $ref: '#/components/schemas/PlanService' }
+        _org: { type: string, example: example.com }
+        objectId: { type: string, example: 12xvxc345ssdsds-508 }
+        objectType: { type: string, enum: [plan] }
+        planType: { type: string, enum: [inNetwork, outNetwork] }
+        creationDate:
+          type: string
+          pattern: '^\d{2}-\d{2}-\d{4}$'
+          example: 12-12-2017
+
+    PlanSummary:
+      type: object
+      properties:
+        objectId: { type: string }
+        planType: { type: string, enum: [inNetwork, outNetwork] }
+        creationDate: { type: string }
+
+    WriteResult:
+      type: object
+      properties:
+        message: { type: string, example: Plan created successfully }
+        objectId: { type: string }
+        etag: { type: string }
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, example: Not Found }
+        message: { type: string }
+
+    ValidationError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string, example: /planType }
+                  message: { type: string, example: must be equal to one of the allowed values }
+                  params: { type: object }

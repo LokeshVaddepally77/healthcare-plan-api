@@ -25,6 +25,12 @@ Client ──Bearer token──▶ Express API ──▶ Key-value store
 
 Node.js · Express · Ajv · jsonwebtoken · jwks-rsa · RabbitMQ (amqplib) · Elasticsearch 7 · Kibana · Docker Compose
 
+## API docs
+
+The full API is described in [`openapi.yaml`](openapi.yaml) (OpenAPI 3): every endpoint, header, status code and the plan schema.
+
+**[View the docs in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/LokeshVaddepally77/healthcare-plan-api/main/openapi.yaml)**
+
 ## API
 
 All `/api` routes require `Authorization: Bearer <Google ID token>`.
@@ -65,12 +71,13 @@ To call the API, get a Google ID token (for example from the [OAuth 2.0 Playgrou
 
 ## Tests
 
-40 Jest + Supertest tests, run by GitHub Actions on every push. RabbitMQ and Google's key server are mocked, so the tests need no Docker or network:
+44 Jest + Supertest tests, run by GitHub Actions on every push. RabbitMQ and Google's key server are mocked, so the tests need no Docker or network:
 
 - **Endpoints:** create, read, list, merge patch, replace and delete; `409` on duplicates, `404` on unknown plans, and schema rejections (missing fields, bad enums, bad dates, negative numbers, unknown properties).
 - **Conditional requests:** `304` on a matching `If-None-Match`, `412` on a stale `If-Match`, and new ETags after every write.
 - **Merge patch:** nested merging, adding and updating array items by `objectId`, and rejecting a patch whose merged result breaks the schema.
 - **Token verification:** valid Google RS256 tokens pass; missing or malformed headers, HS256 tokens, missing key IDs, foreign issuers, unknown keys, expired tokens and forged signatures are all rejected.
+- **API docs:** `openapi.yaml` is valid OpenAPI, documents every route, and stays in step with the JSON Schema.
 
 ```bash
 npm test
@@ -79,6 +86,7 @@ npm test
 ## Project structure
 
 ```
+openapi.yaml                 OpenAPI 3 spec
 config/storage.js            key-value store
 middleware/tokenVerifier.js  Google RS256 token verification
 middleware/validator.js      Ajv schema validation
